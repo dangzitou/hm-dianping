@@ -9,8 +9,13 @@ import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisIdWorker;
+import com.hmdp.utils.SimpleRedisLock;
 import com.hmdp.utils.UserHolder;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.aop.framework.AopContext;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -33,6 +38,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Resource
     private RedisIdWorker redisIdWorker;
 
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private RedissonClient redissonClient;
+
     @Override
     public Result secKill(Long voucherId) {
         //查询优惠券是否存在
@@ -53,11 +64,25 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         if(voucher.getStock() < 1){
             return Result.fail("库存不足");
         }
+
         Long userId = UserHolder.getUser().getId();
-        synchronized (userId.toString().intern()) {
-            //创建代理对象，使用代理对象调用第三方事务方法， 防止事务失效
+        //创建锁对象
+        //SimpleRedisLock lock = new SimpleRedisLock("order:" + userId, stringRedisTemplate);
+        RLock lock = redissonClient.getLock("lock:order:" + userId);
+        //获取锁
+        boolean isLock = lock.tryLock();
+        //判断是否获取锁成功
+        if(!isLock){
+            return Result.fail("不允许重复下单");
+        }
+        try {
+            //获取代理对象(因为事务是通过代理对象来实现的)
             IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+            //执行下单
             return proxy.createVoucherOrder(voucherId);
+        } finally {
+            //释放锁
+            lock.unlock();
         }
     }
 
